@@ -91,6 +91,12 @@ void send_recv_loop(int soc)
   int end, width;
   ssize_t len;
   fd_set mask, ready;
+
+  /**
+   * select()するためにははじめに読み込み可能かどうかを調べたいディスクリプタをセットしたマスクデータを作る
+   * FD_ZERO()マクロでクリアし、FD_SET()マクロでチェック対象に加えたいディスクリプタをセット
+   */
+
   // select()用マスク
   FD_ZERO(&mask);
   
@@ -106,6 +112,7 @@ void send_recv_loop(int soc)
    */
   for (end = 0;;) {
     // マスクの代入
+    // select()はマスクを書き換えるので毎回変数にコピーしてから渡す
     ready = mask;
 
     // タイムアウト値のセット
@@ -123,10 +130,11 @@ void send_recv_loop(int soc)
      * 適当な待ちの処理をいれないとCPUを無駄に消費するが、この処理を入れるのが難しいため
      * 安全な多重化を行うためにselect()を使用するのが一番　多重化に関してはchapter05
      * 
-     * 
+     * select()するためには事前にFD_SET()で加えたいディスクリプタをセットしておく
      */
     switch (select(width, (fd_set *) &ready, NULL, NULL, &timeout)) {
     case -1:
+      // たいていは禁止していないシグナルを受けた場合や引数が異常な場合
       // error
       perror("select");
       break;
@@ -179,4 +187,28 @@ void send_recv_loop(int soc)
       break;
     }
   }
+}
+
+int main(int argc, char *argv[])
+{
+  int soc;
+  // 引数チェック　ホスト名・ポート名が指定されているか
+  if (argc <= 2) {
+    (void) fprintf(stderr, "client server-host port\n");
+    return (EX_USAGE);
+  }
+
+  // サーバーにソケット接続
+  if ((soc = client_socket(argv[1], argv[2])) == -1) {
+    (void) fprintf(stderr, "client_socket():error\n");
+    return (EX_UNAVAILABLE);
+  }
+
+  // 送受信処理
+  send_recv_loop(soc);
+
+  // ソケットクローズ
+  (void) close(soc);
+
+  return (EX_OK);
 }

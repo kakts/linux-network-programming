@@ -252,6 +252,7 @@ int main(int argc, char *argv[])
   // アクセプトループ
   accept_loop(soc);
 
+  (void) fprintf(stderr, "closing the socket\n");
   // ソケットクローズ
   (void) close(soc);
   return (EX_OK);
