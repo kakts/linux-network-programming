@@ -1,5 +1,5 @@
-PROGRAM = signaltest
-OBJS = signaltest.o
+PROGRAM = re-exec
+OBJS = re-exec.o
 SRCS = $(OBJS:%.o=%.c)
 
 # -DUSE_SIGNALを設定するとmacだとうまく動作しない

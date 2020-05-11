@@ -2,6 +2,9 @@
  * p64 
  * ハングアップシグナル(SIGHUP)をキャッチした際にexecv3()で自分自身を再起動させることで
  * パラメータ設定を新たに読み込んだ処理を起動できる。
+ * 
+ * macの場合はUSE_SIGNALを設定するとうまく動作しない　2回目以降はSIGHUPをキャッチできない
+ * CFLAGS = -g -Wall
  */
 #include <signal.h>
 #include <stdio.h>
