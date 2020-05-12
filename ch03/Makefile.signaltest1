@@ -1,0 +1,10 @@
+PROGRAM = signaltest1
+OBJS = signaltest1.o
+SRCS = $(OBJS:%.o=%.c)
+
+# -DUSE_SIGNALを設定するとmacだとうまく動作しない
+CFLAGS = -g -Wall
+LDFLAGS = 
+
+$(PROGRAM):$(OBJS)
+	$(CC) $(CLAGS) $(LDFLAGS) -o $(PROGRAM) $(OBJS) $(LDLIBS)
