@@ -1,5 +1,7 @@
 /**
  * 3.7.1 正常終了
+ * 3.7.2 シグナルの無視
+ * 
  * シグナルに対して、終了フラグを立てるハンドラを設定する
  * プログラム内のループでそのフラグを参照し終了する
  */
@@ -47,6 +49,56 @@ int main(int argc, char *argv[])
     sa.sa_handler = sig_int_handler;
     sa.sa_flags = SA_NODEFER;
     (void) sigaction(SIGINT, &sa, (struct sigaction *) NULL);
+
+    /**
+     * SIGPIPEなどのシグナルを受け取った時に終了させないようにする
+     * 
+     * SIGPIPE すでに相手から切断されてしまったソケットに対する書き込みを行うときに発生
+     * タイミングの問題で発生することがある
+     * SIGUSR1 SIGUSR2はユーザ定義のシグナルで、これも無視させる
+     * 
+     * シグナルを無視するにはSIG_IGNという定数を指定する
+     * 
+     * SIGTTIN SIGTTOU
+     * バックグラウンドのプロセスが端末からの入力を要求したり、端末への出力を行う時に発生する
+     * 受け取ったプロセスはフォアグラウンドになるまで一時停止してしまう
+     * 一般的にプログラムを常に動作させる際はバックグラウンド起動でなく、デーモン化させるので問題ないが
+     * 特別な理由がない限りは無視させるほうが安全
+     */
+
+    // SIGPIPE
+    (void) sigaction(SIGPIPE, (struct sigaction *) NULL, &sa);
+    sa.sa_handler = SIG_IGN; // 無視
+    sa.sa_flags = SA_NODEFER;
+    (void) sigaction(SIGPIPE, &sa, (struct sigaction *) NULL);
+
+    // SIGUSR1
+    (void) sigaction(SIGUSR1, (struct sigaction *) NULL, &sa);
+    sa.sa_handler = SIG_IGN; // 無視
+    sa.sa_flags = SA_NODEFER;
+    (void) sigaction(SIGUSR1, &sa, (struct sigaction *) NULL);
+
+    // SIGUSR2
+    (void) sigaction(SIGUSR2, (struct sigaction *) NULL, &sa);
+    sa.sa_handler = SIG_IGN; // 無視
+    sa.sa_flags = SA_NODEFER;
+    (void) sigaction(SIGUSR2, &sa, (struct sigaction *) NULL);
+
+    // SIGTTIN
+    (void) sigaction(SIGTTIN, (struct sigaction *) NULL, &sa);
+    sa.sa_handler = SIG_IGN; // 無視
+    sa.sa_flags = SA_NODEFER;
+    (void) sigaction(SIGTTIN, &sa, (struct sigaction *) NULL);
+
+    // SIGTTOU
+    (void) sigaction(SIGTTOU, (struct sigaction *) NULL, &sa);
+    sa.sa_handler = SIG_IGN; // 無視
+    sa.sa_flags = SA_NODEFER;
+    (void) sigaction(SIGTTOU, &sa, (struct sigaction *) NULL);
+
+    /**
+     * 
+     */
 
     /**
      * ループ シグナルを受け取っていない間は1秒ごとに.を表示
