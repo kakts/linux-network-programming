@@ -13,7 +13,7 @@
  * EPOLLを使えば、この問題を回避できる。
  */
 
-#include <sys/epoll.h> // 追加 macOSでは EPOLLをサポートしていない linuxのみ
+#include <sys/epoll.h> // 追加 macOSでは 
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/types.h>
