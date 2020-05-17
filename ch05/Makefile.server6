@@ -1,0 +1,8 @@
+PROGRAM = server6
+OBJS = server6.o
+SRCS = $(OBJS:%.o=%.c)
+CFLAGS = -g -Wall
+LDFLAGS = -lpthread # pthreadsを使うためのライブラリ
+
+$(PROGRAM):$(OBJS)
+	$(CC) $(CLAGS) $(LDFLAGS) -o $(PROGRAM) $(OBJS) $(LDLIBS)
