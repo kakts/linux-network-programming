@@ -1,18 +1,21 @@
 /**
  * ch05
- * 5.5.3 EPOLLを使用したマルチクライアント化
+ * 5.8 多重化の組み合わせ
  * 
- * ch01のserver.cをベースに拡張をおこなったもの
+ * select() poll() EPOLLを用いたマルチクライアント化では、ディスクリプタがreadyになった後、
+ * accept()やrecv()、send()が同じ流れで処理されるため、もしsend()に時間がかかる場合、
+ * 次のaccept()が遅れることになる。
  * 
- * select() poll()を使うと簡単にマルチクライアント化できるが、デメリットもある
- * 多くのディスクリプタを使う場合、パフォーマンスで問題になる
- * for文で回す処理があるため
+ * マルチプロセスやマルチスレッドでこの問題を解決できるが、多数のクライアントを処理するために大量のプロセス・スレッドを起動することになり、
+ * リソースを消費する。
  * 
- * ディスクリプタが1つreadyになるたびにループが走ってします。
+ * ここでは accept()やrecv()はselect() poll() EPOLLで多重化することによりマルチクライアント化し、send()は専用のスレッドに任せる方法を採用する
+ * このような専用のスレッドをワーカースレッドと呼ぶ。
  * 
- * EPOLLを使えば、この問題を回避できる。
+ * EPOLLを用いたserver4.cをベースにsend()を専用のワーカースレッドに任せるサンプルを実装する。
+ * 送受信が別れると当然スレッド間のデータの受け渡しが必要となる。
  */
-
+// sys/epoll.h macでは使えないので除外
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -24,6 +27,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <pthread.h> // ワーカースレッドのために必要
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +36,38 @@
 #include <unistd.h>
 
 /**
- * 接続受付
+ * プリプロセッサ定義・グローバル変数
  * 
+ * 1つのスレッドでアクセプト・受診を行い、送信は他のスレッドにデータを渡して行うことになる。
+ * 今までよりも複雑になる。
+ * ここでは5.8.2で説明したキュー(リングバッファ)を配列として定義する
+ */
+#define MAXQUEUESZ 4096
+#define MAXSENDER 2
+#define QUEUE_NEXT(i_) (((i_) + 1) % MAXQUEUESZ)
 
+struct queue_data {
+    int acc;
+    char buf[512];
+    ssize_t len;
+};
+
+/**
+ * リングバッファキュー
+ */
+struct queue {
+    int front;
+    int last;
+    struct queue_data data[MAXQUEUESZ];
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+};
+
+struct queue g_queue[MAXSENDER];
+
+/**
+ * 接続受付
+ * server4.cと同じ
  * ソケットの生成から接続待受の段階ではマルチクライアントに関する配慮は必要ない
  * ch01 server.cと同じ関数を利用
  */
@@ -146,9 +179,10 @@ int server_socket(const char *portnm)
 /**
  * 接続受付
  * 
+ * server4.cと違い、send_recv()を自分のスレッド内では呼ばず、代わりにキューに受診したデータとディスクリプタをエンキューするようにする
+ * 
+ * 
  * server3.cのpoll()を使用した例と似ているが、準備と監視方法が違う
- * 
- * 
  * EPOLLを利用する際の流れ
  * - epoll_create()でEPOLLを使うためのディスクリプタを得る
  * - epoll_event型構造体のfd, eventsメンバに開始対象をセットし、epoll_ctl()で
@@ -176,12 +210,12 @@ void accept_loop(int soc)
 {
     char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
     struct sockaddr_storage from;
-    int acc, count, i, epollfd, nfds, ret;
-    socklen_t len;
-    struct epoll_event ev, events[MAX_CHILD];
+    int acc, count, i, qi, epollfd, nfds;
+    socklen_t lfen;
+    struct epoll_event ev, events[MAX_CHILD + 1];
 
     // epoll_create()でEPOLLを使うためのディスクリプタを得る
-    if ((epollfd = epoll_create(MAX_CHILD + 1)) == -1) {
+    if ((epollfd = epoll_create(1)) == -1) {
         perror("epoll_create");
         return;
     }
@@ -222,15 +256,15 @@ void accept_loop(int soc)
             for (i = 0; i < nfds; i++) {
                 // ソケットがreadyになっている
                 if (events[i].data.fd == soc) {
-                    len = (socklen_t) sizeof(from);
+                    flen = (socklen_t) sizeof(from);
 
                     // 接続受付
-                    if ((acc = accept(soc, (struct sockaddr *)&from, &len)) == -1) {
+                    if ((acc = accept(soc, (struct sockaddr *)&from, &flen)) == -1) {
                         if (errno != EINTR) {
                             perror("accept");
                         }
                     } else {
-                        (void) getnameinfo((struct sockaddr *) &from, len,
+                        (void) getnameinfo((struct sockaddr *) &from, flen,
                                                     hbuf, sizeof(hbuf),
                                                     sbuf, sizeof(sbuf),
                                                     NI_NUMERICHOST | NI_NUMERICSERV);
@@ -247,27 +281,47 @@ void accept_loop(int soc)
                             ev.events = EPOLLIN;
                             if (epoll_ctl(epollfd, EPOLL_CTL_ADD, acc, &ev) == -1) {
                                 perror("epoll_ctl");
-                                (void) close(acc);
-                                (void) close(epfd);
                                 return;
                             }
                             count++;
                         }
                     }
                 } else {
-                    // 送受信
-                    if ((ret = send_recv(events[i].data.fd, events[i].data.fd)) == -1) {
+                    // リングバッファキュー用のインデックス計算
+                    qi = events[i].data.fd % MAXSENDER;
+                    
+                    // キューの末尾にデータ設定
+                    g_queue[qi].data[g_queue[qi].last].acc = events[i].data.fd;
+                    g_queue[qi].data[g_queue[qi].last].len
+                        = recv(g_queue[qi].data[g_queue[qi].last].acc,
+                               g_queue[qi].data[g_queue[qi].last].buf,
+                               sizeof(g_queue[qi].data[g_queue[qi].last].buf),
+                               0);
+                    // 受信
+                    switch (g_queue[qi].data[g_queue[qi].last].len) {
+                    case -1:
+                        // エラー
+                        perror("recv");
+                        break; // 本だとここのbreakがなかった
+                    case 0:
+                        // EOF
+                        (void) fprintf(stderr, "[child%d]recv:EOF\n", events[i].data.fd);
                         // エラーまたは切断
-                        // epoll_ctl()で監視が不要になったディスクリプタを削除する
                         if (epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, &ev) == -1) {
                             perror("epoll_ctl");
-                            (void) close(events[i].data.fd);
-                            (void) close(epfd);
                             return;
                         }
                         // クローズ
                         (void) close(events[i].data.fd);
                         count--;
+                        break;
+                    default:
+                        // キューを次に進める。
+                        (void) pthread_mutex_lock(&g_queue[qi].mutex);
+                        g_queue[qi].last = QUEUE_NEXT(g_queue[qi].last);
+                        (void) pthread_cond_signal(&g_queue[qi].cond); // 通知
+                        (void) pthread_mutex_unlock(&g_queue[qi].mutex);
+                        break;
                     }
                 }
             }
@@ -306,47 +360,54 @@ size_t mystrlcat(char *dst, const char *src, size_t size)
 
 /**
  * 送受信
- * 今回送受信は1回終えるごとにselect()のループに戻る必要がある
- * ch01とは処理が異なる
+ * server4.cと違い、送信はスレッドとなるため、send_recv()はsend_thread()というスレッド開始スレッドにする。
  * 
- * 単純にrecv()で受診し、応答をsend()で送信したら返るだけの処理
+ * キューの説明通り、デキューをしてそのデータを送信するような関数とする。
  */
-int send_recv(int acc, int child_no)
+// 送信スレッド
+void send_thread(void *arg)
 {
-    char buf[512], *ptr;
+    char *ptr;
     ssize_t len;
+    int i, qi;
+    qi = (int) arg; // 引数からリングバッファキューのインデックスを取得
 
-    // 受信
-    if ((len = recv(acc, buf, sizeof(buf), 0)) == -1) {
-        // エラー
-        perror("recv");
-        return (-1);
-    }
+    for (;;) {
+        (void) pthread_mutex_lock(&g_queue[qi].mutex);
+        // リングバッファキューが満杯でない場合
+        if (g_queue[qi].last != g_queue[qi].front) {
+            i = g_queue[qi].front;
+            g_queue[qi].front = QUEUE_NEXT(g_queue[qi].front); // frontのインデックスを進める。
+            (void) pthread_mutex_unlock(&g_queue[qi].mutex);
+        } else {
+            // リングバッファキューが満杯の場合
+            (void) pthread_cond_wait(&g_queue[qi].cond, &g_queue[qi].mutex);
+            (void) pthread_mutex_unlock(&g_queue[qi].mutex);
+            continue;
+        }
 
-    if (len == 0) {
-        // EOF
-        (void) fprintf(stderr, "[child%d] recv:EOF\n", child_no);
-        return (-1);
-    }
+        // 文字列化・表示
+        g_queue[qi].data[i].buf[g_queue[qi].data[i].len] = '\0';
+        if ((ptr = strpbrk(g_queue[qi].data[i].buf, "\r\n")) != NULL) {
+            *ptr = '\0';
+        }
+        (void) fprintf(stderr, "[child%d]%s\n", g_queue[qi].data[i].acc, g_queue[qi].data[i].buf);
 
-    // 文字列化・表示
-    buf[len] = '\0';
-    if ((ptr = strpbrk(buf, "\r\n")) != NULL) {
-        *ptr = '\0';
-    }
-    (void) fprintf(stderr, "[child%d]%s\n", child_no, buf);
-    // 応答文字列作成
-    (void) mystrlcat(buf, ":OK\r\n", sizeof(buf));
-    len = strlen(buf);
+        // 応答文字列作成
+        (void) mystrlcat(g_queue[qi].data[i].buf, ":OK\r\n", sizeof(g_queue[qi].data[i].buf));
+        g_queue[qi].data[i].len = strlen(g_queue[qi].data[i].buf);
 
-    // 応答
-    if ((len = send(acc, buf, len, 0)) == -1) {
-        // エラー
-        perror("send");
-        return (-1);
+        // 応答
+        if ((len = send(g_queue[qi].data[i].acc, g_queue[qi].data[i].buf, g_queue[qi].data[i].len, 0)) == -1) {
+            // エラー
+            perror("send");
+        }
     }
-    return (0);
+    pthread_exit((void *) 0);
+    // NOT REACHED
+    return ((void *) 0);
 }
+
 
 /**
  * main
@@ -355,13 +416,22 @@ int send_recv(int acc, int child_no)
  */
 int main(int argc, char *argv[])
 {
-    int soc;
+    int soc, i;
+    pthread_t id;
     // 引数にポート番号が指定されているか?
     if (argc <= 1) {
-        (void) fprintf(stderr, "server2 port\n");
+        (void) fprintf(stderr, "server9 port\n");
         return (EX_USAGE);
     }
-    // サーバソケットの準備
+
+    for (i = 0; i < MAXSENDER; i++) {
+        // mutex初期化
+        (void) pthread_mutex_init(&g_queue[i].mutex, NULL);
+        (void) pthread_cond_init(&g_queue[i].cond, NULL);
+        // 送信用ワーカースレッドの作成
+        (void) pthread_create(&id, NULL, (void *) send_thread, (void *) i);
+    }
+
     if ((soc = server_socket(argv[1])) == -1) {
         (void) fprintf(stderr, "server_socket(%s):error\n", argv[1]);
         return (EX_UNAVAILABLE);
@@ -369,6 +439,7 @@ int main(int argc, char *argv[])
     (void) fprintf(stderr, "ready for accept\n");
     // アクセプトループ
     accept_loop(soc);
+    pthread_join(id, NULL);
 
     // ソケットクローズ
     (void) close(soc);
