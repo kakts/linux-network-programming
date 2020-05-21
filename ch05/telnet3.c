@@ -1,7 +1,6 @@
 /**
- * 5.11.2 poll()によるクライアントの多重化
- * 
- * 5.11.1と似ている箇所が多い
+ * 5.11.3 ノンブロッキングI/Oによるクライアントの多重化
+ * ノンブロッキングソケットにするためのset_block()を使用
  */
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -14,13 +13,37 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <poll.h> // 追加
+#include <fcntl.h> // 追加
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
 #include <unistd.h>
+
+/**
+ * ブロッキングモードのセット
+ * ch04で説明したset_block()を使用する
+ * 第1引数にディスクリプタ　第2引数0でノンブロッキングを指定
+ * set_block()はソケット以外のディスクリプタに対しても使用できる。
+ * 今回はユーザーからの入力が行われるstdin(0)にも使う。 
+ */
+int set_block(int fd, int flag)
+{
+    int flags;
+    if ((flags = fcntl(fd, F_GETFL, 0)) == -1) {
+        perror("fcntl");
+        return (-1);
+    }
+    if (flag == 0) {
+        // ノンブロッキング
+        (void) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    } else if (flag == 1) {
+        // ブロッキング
+        (void) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+    return (0);
+}
 
 /**
  * グローバル変数
@@ -123,14 +146,15 @@ int recv_data(void)
 /**
  * メインループ
  * 送受信処理
- * 5.11.1と違い、select()の代わりにpoll()を使用するため、前準備とreadyのチェック方法が違う
+ * 5.11.2では set_block()でノンブロッキングモードにし、入力のreadyを調べずにいきなりソケットから受信
+ * stdinから読み込みを行っている。
  * 
  * telnetクライアントは端末設定が「エコーあり、行編集モード」のデフォルト状態では実用にならない
  * そのためsttyコマンドを利用して「エコーなし、RAWモード」にしている。
  */
 void send_recv_loop(void)
 {
-    struct pollfd targets[2];
+    int data_flag;
     char c;
 
     // エコーなし RAWモード
@@ -144,51 +168,54 @@ void send_recv_loop(void)
     (void) setbuf(stdout, NULL);
 
     /**
-     * poll()用データの作成
+     * ノンブロッキングにする
      */
-    targets[0].fd = g_soc;
-    targets[0].events = POLLIN;
-    targets[1].fd = 0;
-    targets[1].events = POLLIN;
+    (void) set_block(0, 0); // stdin(0)もノンブロッキングにする
+    (void) set_block(g_soc, 0);
 
     for (;;) {
-        switch (poll(targets, 2, 1 * 1000)) {
-        case -1:
-            if (errno != EINTR) {
-                perror("poll");
-                g_end = 1;
+        data_flag = 0;
+        // ソケットから受信
+        if (recv_data() == -1) {
+            if (errno != EAGAIN) {
+                // Linuxでは切断でEAGAINになり、判別できない
+                // 切断・エラー
+                break;
             }
-            break;
-        case 0:
-            // timeout
-            break;
-        default:
-            // readyあり
-            if (targets[0].revents & (POLLIN | POLLERR)) {
-                // ソケット受信ready
-                if (recv_data() == -1) {
-                    g_end = 1;
-                    break;
-                }
-            }
-            if (targets[1].revents & (POLLIN | POLLERR)) {
-                // stdin ready
-                c = getchar();
-
-                // サーバに送信
-                if (send(g_soc, &c, 1, 0) == -1) {
-                    perror("send");
-                    g_end = 1;
-                    break;
-                }
-            }
-            break;
+        } else {
+            data_flag = 1;
         }
-        if (g_end) {
-            // for break
-            break;
+        // stdinから読み込み
+        c = getchar();
+        if (c != EOF) {
+            // サーバに送信
+            if (send(g_soc, &c, 1, 0) == -1) {
+                /**
+                 * ノンブロッキングでは1byteも受信データがない場合にもエラーになる
+                 * このときerrnoがEAGAINになる
+                 * この場合は処理場のエラーとはしないようにする
+                 */
+                if (errno != EAGAIN) {
+                    // 切断・エラー
+                    break;
+                }
+            }
+            data_flag = 1;
+        }
+        if (data_flag == 0) {
+            /**
+             * stdin、ソケット共に1byteも得られない場合はusleep()で0.01秒スリープさせる。
+             * CPU負荷を下げるためスリープ
+             * これがないとループが休みなく回り続けることになり、CPUパワーを限界まで消費する。
+             * ノンブロッキングI/Oを使う際にはこのような工夫が非常に重要
+             */
+            (void) usleep(10000);
         }
     }
+    // ブロッキングに戻す
+    (void) set_block(0, 1); // stdin
+    (void) set_block(g_soc, 1);
+
     // エコーあり cookedモード 8ビット
     (void) system("stty echo cooked -istrip");
 }
