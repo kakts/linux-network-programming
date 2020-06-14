@@ -1,0 +1,8 @@
+PROGRAM = pdump
+OBJS = pdump.o
+SRCS = $(OBJS:%.o=%.c)
+CFLAGS = -g -Wall -D_GNU_SOURCE
+LDFLAGS = D_GNU_SOURCE macro
+
+$(PROGRAM):$(OBJS)
+	$(CC) $(CLAGS) $(LDFLAGS) -o $(PROGRAM) $(OBJS) $(LDLIBS)
